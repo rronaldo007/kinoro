@@ -1,0 +1,26 @@
+[project]
+name = "kinoro-server"
+version = "0.0.1"
+description = "Local Django sidecar for the Kinoro desktop editor."
+requires-python = ">=3.11"
+dependencies = [
+    "Django>=5.0,<6.0",
+    "djangorestframework>=3.15",
+    "django-cors-headers>=4.4",
+    "requests>=2.32,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-django>=4.8",
+    "ruff>=0.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+python_files = ["test_*.py", "tests.py"]

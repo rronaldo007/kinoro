@@ -1,0 +1,48 @@
+appId: com.kinoro.desktop
+productName: Kinoro
+copyright: Copyright © 2026 Kinoro contributors
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - package.json
+
+# UI build is produced by `ui/` and referenced via extraResources so the packaged
+# app can load it from file://. The Django sidecar is NOT packaged in M0 — users
+# must have Python 3.11+ and ffmpeg on PATH during M0 development. Bundling
+# Python via PyInstaller + static ffmpeg binaries is an M8 milestone.
+extraResources:
+  - from: ../ui/dist
+    to: ui
+    filter: ["**/*"]
+  - from: ../server
+    to: server
+    filter: ["**/*", "!**/__pycache__/**", "!**/*.pyc"]
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: AudioVideo
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.video
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+
+win:
+  target:
+    - nsis
+    - portable
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

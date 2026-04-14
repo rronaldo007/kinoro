@@ -1,0 +1,31 @@
+# Cloned reference repos — NOT committed
+research/
+
+# Node
+node_modules/
+dist/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Local DB + user data
+db.sqlite3
+*.sqlite3-journal
+user-data/
+
+# Build artifacts
+app/build/
+ui/dist/
+release/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
