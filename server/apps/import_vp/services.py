@@ -64,9 +64,10 @@ class VPClient:
     # ---- auth ---------------------------------------------------------------
 
     def login(self, email: str, password: str) -> VPLoginResult:
+        # VP's LoginSerializer accepts `login` (email or username).
         r = self._session.post(
             f"{self.base_url}/api/auth/login/",
-            json={"email": email, "password": password},
+            json={"login": email, "password": password},
             timeout=self.timeout,
         )
         if r.status_code != 200:
@@ -140,6 +141,20 @@ class VPClient:
     def list_resources(self, project_id: str) -> list[dict[str, Any]]:
         data = self._get(f"/api/projects/{project_id}/resources/").json()
         return data.get("results") if isinstance(data, dict) else data
+
+    # ---- vediteur (Pro Editor) projects -------------------------------------
+    # The "Ouvrir dans l'éditeur" button on VP's /vediteur page hands off
+    # EditorProject UUIDs, which live at a different endpoint.
+
+    def get_vediteur_project(self, project_id: str) -> dict[str, Any]:
+        return self._get(f"/api/vediteur/projects/{project_id}/").json()
+
+    def try_get_any_project(self, project_id: str) -> tuple[str, dict[str, Any]]:
+        """Fetch by ID from either Project or EditorProject. Returns (kind, data)."""
+        try:
+            return "editor", self.get_vediteur_project(project_id)
+        except VPClientError:
+            return "project", self.get_project(project_id)
 
     # ---- media download -----------------------------------------------------
 

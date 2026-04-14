@@ -7,6 +7,8 @@ declare global {
       platform: string;
       openFiles: (opts: unknown) => Promise<unknown>;
       saveAs: (opts: unknown) => Promise<unknown>;
+      getPendingOpenUrl?: () => Promise<string | null>;
+      onOpenUrl?: (handler: (url: string) => void) => () => void;
     };
   }
 }

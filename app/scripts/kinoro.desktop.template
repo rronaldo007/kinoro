@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Kinoro (dev)
+Comment=Dev-mode handler for kinoro:// URLs
+Exec=__LAUNCHER__ %u
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/kinoro;
+Categories=AudioVideo;Video;

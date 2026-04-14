@@ -21,6 +21,11 @@ extraResources:
     to: server
     filter: ["**/*", "!**/__pycache__/**", "!**/*.pyc"]
 
+protocols:
+  - name: Kinoro
+    schemes:
+      - kinoro
+
 linux:
   target:
     - AppImage

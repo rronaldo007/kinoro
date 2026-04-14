@@ -23,12 +23,15 @@ DEBUG = os.environ.get("KINORO_DEBUG", "1") == "1"
 # Local-only. If this list ever grows beyond localhost, something is wrong.
 ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
 
-# Electron renderer in dev lives at http://localhost:5173 (Vite).
+# Electron renderer in dev lives at http://localhost:5174 (Vite); 5173 kept
+# as a fallback for standalone Kinoro dev when Video Planner isn't running.
 # In packaged builds the renderer loads via file:// and CORS is still required
 # because it uses fetch/XHR to hit 127.0.0.1:<sidecar-port>.
 CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:5173",
     "http://localhost:5173",
+    "http://127.0.0.1:5174",
+    "http://localhost:5174",
 ]
 CORS_ALLOWED_ORIGIN_REGEXES = [
     # Electron file:// wraps the UI in a null origin; allow via regex.

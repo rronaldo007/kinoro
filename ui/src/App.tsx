@@ -1,6 +1,10 @@
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Film } from "lucide-react";
 import { api } from "./api/client";
+import HandoffPanel, {
+  type IncomingOpen,
+} from "./features/import-vp/HandoffPanel";
 
 interface HealthResponse {
   status: string;
@@ -11,12 +15,47 @@ interface HealthResponse {
   ffprobe_on_path: boolean;
 }
 
+function parseKinoroUrl(raw: string): IncomingOpen | null {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "kinoro:") return null;
+    const baseUrl = decodeURIComponent(u.searchParams.get("base_url") ?? "");
+    const projectId = u.searchParams.get("project_id") ?? "";
+    if (!baseUrl || !projectId) return null;
+    return { baseUrl, projectId, rawUrl: raw };
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
   const { data, isLoading, isError } = useQuery<HealthResponse>({
     queryKey: ["health"],
     queryFn: async () => (await api.get("/api/health/")).data,
     refetchInterval: 2000,
   });
+
+  const [incoming, setIncoming] = useState<IncomingOpen | null>(null);
+
+  useEffect(() => {
+    const kinoro = window.kinoro;
+    if (!kinoro) return;
+
+    // Pending URL from cold launch.
+    kinoro.getPendingOpenUrl?.().then((url) => {
+      if (url) {
+        const parsed = parseKinoroUrl(url);
+        if (parsed) setIncoming(parsed);
+      }
+    });
+
+    // Live events while Kinoro is running.
+    const unsub = kinoro.onOpenUrl?.((url) => {
+      const parsed = parseKinoroUrl(url);
+      if (parsed) setIncoming(parsed);
+    });
+    return () => unsub?.();
+  }, []);
 
   return (
     <div
@@ -37,6 +76,8 @@ export default function App() {
           </p>
         </div>
       </div>
+
+      {incoming && <HandoffPanel incoming={incoming} />}
 
       <div
         className="min-w-[380px] rounded-[9px] p-5 border"
@@ -96,9 +137,13 @@ function Row({
   ok?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-neutral-500">{label}</span>
-      <span className={ok === false ? "text-red-400" : "text-neutral-200"}>
+    <div className="flex items-center justify-between gap-4">
+      <span className="text-neutral-500 shrink-0">{label}</span>
+      <span
+        className={`text-right truncate ${
+          ok === false ? "text-red-400" : "text-neutral-200"
+        }`}
+      >
         {value}
       </span>
     </div>
