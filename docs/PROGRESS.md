@@ -246,8 +246,10 @@ Engine test suite: 44 (speed 8 + text 10 + transitions 17 + multitrack
 
 ## What's next
 
-Ordered by dependency, not urgency. Everything here is tracked in
-`ROADMAP.md`.
+Ordered by dependency, not urgency. Committed milestones live in
+`ROADMAP.md`; loose editor-feature ideas (multi-select, J/K/L,
+waveforms, presets, bins, etc.) live in
+[`BACKLOG.md`](./BACKLOG.md) and can be picked off between milestones.
 
 ### Remaining polish + cleanup (small)
 

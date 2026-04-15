@@ -102,6 +102,10 @@ touching an area:
   phases (A done, B–D pending).
 - [`docs/ROADMAP.md`](./docs/ROADMAP.md) — M0 → M8 milestone plan with time
   estimates and verification checklists.
+- [`docs/BACKLOG.md`](./docs/BACKLOG.md) — unscheduled editor-feature
+  ideas grouped by surface area (timeline UX, visual fidelity, audio,
+  effects, media mgmt, workflow). Idea pool for picking off slices
+  between committed milestones.
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — layered design
   (Electron main / React renderer / Django sidecar / framework-free
   `engine/`) + data-flow diagrams for ingest and VP import.
