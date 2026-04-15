@@ -133,6 +133,93 @@ failure). Full sidecar suite now 80 passing.
 - `CLAUDE.md`: OPERATIONS.md linked in the docs list.
 - `README.md`: bootstrap instructions call out `npm run start:dev`.
 
+### Phase B1–B5 — M1 completeness  ·  2026-04-15
+
+Proxy pipeline + admin + logging + type canonicalization landed
+alongside the editor-shell work.
+
+- `MediaAsset.proxy_path` + `proxy_status` (pending/building/ready/
+  failed/skipped) with migration.
+- `apps/media/services.py` calls `engine.ffmpeg.build_proxy` after
+  poster extraction, writes `$KINORO_DATA_DIR/proxies/<id>.mp4`
+  (720p H.264 + AAC). Poster seek fixed to min(1.0, duration*0.5)
+  for sub-2s clips that previously crashed with empty output.
+- `MediaAsset` registered in admin with failed-ingest filter.
+- `LOGGING` dict added — console INFO + `$KINORO_DATA_DIR/kinoro.log`
+  DEBUG with rotation.
+- Importer dropped the legacy `kind` fallback; canonicalized on VP's
+  `type` field.
+- `/proxies/` route served by Django's `static()` for proxy playback.
+
+### M2 — Editor shell + multi-track timeline  ·  2026-04-15
+
+Full editor surface lands. App.tsx reduced to a thin wrapper; the
+5-region shell (TopBar / MediaPool / Viewer / Inspector / Timeline /
+DevDrawer) under `ui/src/features/editor-shell/` owns the UX.
+
+- `Project` model (name, fps, width, height, `timeline_json`,
+  `render_settings`) + DRF viewset + first migration.
+- `ui/src/stores/timelineStore.ts` — zustand + immer. Tracks V1/V2/
+  A1/A2 by default. `Clip` discriminated on `type: "media" | "text"`,
+  per-clip `speed`, optional `transition_in/out`. Snapshot-based
+  linear undo/redo, capped at 100 steps. Live-gesture pattern:
+  `beginHistoryStep()` at mousedown + `*Live` non-snapshotting
+  setters during drag.
+- `Timeline.tsx` — multi-track pane, drag-to-move/trim, `Ctrl+wheel`
+  zoom, "Add text" button, gradient wedges for transitions.
+- Drag-from-pool to timeline; pool items carry the asset UUID.
+- `useProjectLoader.ts` / `useAutosave.ts` — open-or-create match
+  by handoff title, 700 ms debounced PUT on tracks/clips diff.
+  TopBar shows Saving… / Saved / Unsaved.
+- `useTimelineShortcuts.ts` — Space / ←→ / Home / End / S / Delete /
+  ⌘Z / ⌘Y / + / −, gated on non-editable focus.
+
+### M3 — Viewer + playback  ·  2026-04-15
+
+- `Viewer.tsx` — `<video>` bound to the active clip's proxy. Two-way
+  playhead sync; suppress-timeupdate ref breaks the feedback loop on
+  external seeks.
+- Active-clip selection prefers topmost video track.
+- Transport bar: `[⏮ Start] [⟨ −1f] [▶/⏸] [⟩ +1f] [⏭ End]`,
+  timecode, fps badge, mute toggle. Play-when-off-clip snaps to the
+  first clip so the button never looks broken.
+- `AudioLayer` — hidden `<audio>` per active A1/A2 clip, synced to
+  playhead + `playbackRate`. Additive on top of the `<video>`'s V1
+  audio (matches engine `amix` behaviour).
+
+### M4 — Text, transitions, speed  ·  2026-04-15
+
+- Per-clip `speed` via engine `setpts=(PTS-STARTPTS)/S` + chained
+  `atempo` (pitch-preserved, clamped 0.1×–10×).
+- `type="text"` clips composited via `drawtext` with
+  `enable='between(t,s,e)'`; Inspector TextControls (content, colour,
+  size, x/y position sliders).
+- Fade + dissolve transitions. Fade = boundary `fade=t=in/out` +
+  `afade`. Dissolve = `xfade=transition=fade` + `acrossfade` when
+  both sides ask AND the clips are flush; degrades to fade otherwise.
+  Frames clamped [1, 120] and to half-clip-duration so 3 s clips
+  with 2 s fades don't blow up the math.
+- Viewer text overlays use `containerType: "size"` + `cqh` so font
+  sizes entered at 1080p render proportionally in the preview box.
+
+### M5 — Export to MP4  ·  2026-04-15
+
+- `RenderJob` model (queued/rendering/done/failed, progress,
+  output_path). `start_render` spawns a daemon thread; progress
+  parses `out_time_ms=` from `ffmpeg -progress pipe:1` throttled to
+  every 0.5 s.
+- `DeliverPanel.tsx` — swaps Viewer on the Deliver tab. Render
+  button + job list with live polling + download link.
+- **Multi-track render**: `timeline_render.py` generalized beyond
+  V1. V2 clips composited via `overlay=enable='between(...)'` over
+  V1 (gaps transparent so V1 shows through). A1/A2 mixed with V1
+  audio via `amix=inputs=N:duration=longest`. Single-V1-clip path
+  is byte-identical to the pre-multitrack filter_complex — existing
+  tests stay green.
+
+Engine test suite: 44 (speed 8 + text 10 + transitions 17 + multitrack
+7 + existing render 2). Full sidecar suite: **80 passing**.
+
 ---
 
 ## Current state, in one glance
@@ -142,8 +229,14 @@ failure). Full sidecar suite now 80 passing.
   `kinoro://` deep links from VP's `/vediteur` and `/projects/<id>/`
   pages open Kinoro, pull the project, fetch its media on a tracked
   background job with live progress.
-- **Not tested on macOS/Windows**. ROADMAP claims "cross-platform from
-  M0"; reality is Linux-first. To be corrected in Phase C2.
+- **Editor works end-to-end**: media pool → drag to timeline →
+  trim/split/transitions/text/speed → scrub preview with proxy
+  video + A1/A2 audio → render to MP4 via Deliver tab. Autosave
+  every 700 ms, undo/redo 100 steps.
+- **80 tests passing** under `cd server && KINORO_DATA_DIR=/tmp/x
+  .venv/bin/python -m pytest -q` (~2 s).
+- **Not tested on macOS/Windows** — Linux-first until M8, documented
+  honestly in ROADMAP and CLAUDE.md.
 - **Packaged releases exist but are non-functional** (bundle doesn't
   include Python or ffmpeg — that's M8). `npm run dist:*` produces
   AppImage / deb / DMG / NSIS but they require host Python 3.11+ and
@@ -153,77 +246,19 @@ failure). Full sidecar suite now 80 passing.
 
 ## What's next
 
-Ordered by dependency, not urgency. Everything here is tracked in the
-plan file or ROADMAP.
+Ordered by dependency, not urgency. Everything here is tracked in
+`ROADMAP.md`.
 
-### Phase B — M1 completeness (remaining)
+### Remaining polish + cleanup (small)
 
-| # | Item | Scope |
-|---|---|---|
-| B1 | `MediaAsset.proxy_path` + `proxy_status` fields | model + migration |
-| B2 | Call `engine.ffmpeg.build_proxy` after poster in `_do_ingest`; write 720p H.264 + AAC MP4 to `$KINORO_DATA_DIR/proxies/<id>.mp4` | `apps/media/services.py` |
-| B3 | Register `MediaAsset` in Django admin with failed-ingest filter | `apps/media/admin.py` |
-| B4 | `LOGGING` dict in settings — console (INFO) + `$KINORO_DATA_DIR/kinoro.log` (DEBUG) | `config/settings.py` |
-| B5 | Drop the `type` / `kind` fallback in the importer; canonicalize on VP's `type` field | `apps/import_vp/importers.py` |
-| B6 | ~~ZIP import path~~ — done 2026-04-15 |
-
-After Phase B, M1 per `ROADMAP.md` is actually shipped (not just
-claimed).
-
-### Phase C — Architectural hygiene (remaining)
-
-| # | Item |
-|---|---|
-| C1 | ~~`--no-sandbox` split~~ — done 2026-04-15 |
-| C2 | ~~ROADMAP cross-platform rewrite~~ — done 2026-04-15 |
-| C3 | Add a section to `ARCHITECTURE.md` describing the handoff + import design that matches reality (two sources, two kinds, one job pipeline) |
-| C4 | ~~`docs/OPERATIONS.md`~~ — done 2026-04-15 |
-| C5 | Note in `docs/VIDEO_PLANNER_INTEGRATION.md` that seed data imports from MDN / w3schools / samplelib (was Google CDN) |
-
-### Phase D — Tests (from zero to a thin safety net)
-
-| # | Item |
-|---|---|
-| D1 | `server/pytest.ini` + `conftest.py`, first passing run |
-| D2 | Unit tests for pure functions: `_collect_asset_ids`, `_video_resources_with_url`, `_classify` |
-| D3 | Integration: boot sidecar, hit `/api/health/`, create a `MediaAsset` for a tiny test clip, assert probe/thumbnail populate |
-| D4 | Mock `VPClient` → run `_run_import` happy path, assert job transitions |
-
-### M2 — Multi-track timeline + undo/redo  (~9 days)
-
-From `ROADMAP.md:54–63`:
-
-- `Project` model (name, fps, `timeline_json` per `PROJECT_FORMAT.md`),
-  autosave debounced 700 ms.
-- `ui/src/stores/timelineStore.ts` — tracks, clips, selection,
-  playhead, `pxPerSec`.
-- Command-pattern undo/redo with Immer (linear history, max 100).
-- Timeline UI: ruler + V1/V2/A1/A2 + drag-to-add + trim handles + split
-  (S) + ripple delete + magnetic snap (N).
-- Shortcuts: Space, J/K/L, ⌘Z/⌘Y, S, Delete, +/−.
-
-This is also the right slice to land the **editor shell** UI (top tabs,
-left media pool, centre viewer, right inspector, bottom timeline) the
-user previously queued. Shell becomes functional as M2 progresses.
-
-### M3 — Viewer + playback  (~4 days)
-
-`<video>` bound to the proxy of the clip under the playhead; swap `src`
-on boundary crossing; transport Space/J/K/L; preroll for dissolves.
-Verify: Space plays the whole sequence at correct in/out points.
-
-### M4 — Text, transitions, speed  (~6 days)
-
-Text clips (content, font, x/y/size, color). Fade + dissolve on clip
-boundaries. Per-clip speed via FFmpeg `setpts` + `atempo`. Inspector
-form controls bound to selected clip.
-
-### M5 — Export + presets + FCPXML  (~5 days)
-
-Port `engine/deliver/timeline_render.py` to full multi-track. Presets
-(YouTube 1080p, TikTok vertical, custom). Progress via Channels
-WebSocket. Electron `dialog:saveAs`. FCPXML 1.10 export ported from
-`video-planner3/backend/apps/exports/` for Resolve round-trip.
+- **C3** — Handoff + import design section in `ARCHITECTURE.md`
+  (two sources, two kinds, one job pipeline). Useful but not
+  blocking.
+- **C5** — Note seed swap (MDN / w3schools / samplelib replaced the
+  retired Google CDN bucket) in `VIDEO_PLANNER_INTEGRATION.md`.
+- **M4 / M5 polish**: preroll for dissolves in the preview (render
+  already handles them), TikTok 9:16 + custom preset editor, FCPXML
+  1.10 export port from VP's `apps/exports/`.
 
 ### M6 — Audio mixer + LUFS  (~6 days)
 
@@ -272,14 +307,6 @@ M0" claim actually becomes true.
 - **Sidecar logs** (Phase B4): will land at
   `~/.config/kinoro-app/data/kinoro.log`.
 - **Verify TS**: `cd kinoro/ui && npx tsc --noEmit` must exit 0.
+- **Verify tests**: `cd kinoro/server && KINORO_DATA_DIR=/tmp/kinoro-test
+  .venv/bin/python -m pytest -q` — 80 passing in ~2 s.
 - **Verify Django**: `cd kinoro/server && KINORO_DATA_DIR=... .venv/bin/python manage.py check`.
-
-Open questions from the audit plan remain unanswered:
-
-1. Do doc corrections (Phase C2–C5) fold into each phase as it lands,
-   or get saved for a single docs pass after Phase B?
-2. Is the "no Windows/macOS testing until M8" stance acceptable,
-   captured via the ROADMAP rewrite in C2?
-
-See `~/.claude/plans/delegated-dreaming-sphinx.md` for the full plan,
-findings, and verification recipes.

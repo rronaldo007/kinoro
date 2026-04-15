@@ -36,7 +36,7 @@ verification of the same path lands with M8 packaging.
 
 ---
 
-## M1 — Media pool + proxies + Video Planner import (API + ZIP)  (~8 days)
+## ✅ M1 — Media pool + proxies + Video Planner import (API + ZIP)  ·  shipped 2026-04-15
 
 ### Media pool
 - `MediaAsset` model: source_path, probe metadata (JSON), proxy_path, thumbnail_path, kind, status
@@ -66,7 +66,7 @@ See `docs/VIDEO_PLANNER_INTEGRATION.md` for the full spec.
 
 ---
 
-## M2 — Multi-track timeline + undo/redo  (~9 days)
+## ✅ M2 — Multi-track timeline + undo/redo  ·  shipped 2026-04-15
 
 - `Project` model: name, fps, timeline_json (schema per `PROJECT_FORMAT.md`), debounced autosave every 700 ms
 - `ui/src/stores/timelineStore.ts`: tracks[], clips[], selection, playhead, pxPerSec
@@ -79,7 +79,7 @@ See `docs/VIDEO_PLANNER_INTEGRATION.md` for the full spec.
 
 ---
 
-## M3 — Viewer + playback  (~4 days)
+## ✅ M3 — Viewer + playback  ·  shipped 2026-04-15
 
 - `<video>` element bound to proxy of clip-under-playhead
 - On playhead boundary crossing: swap `src` + seek to in-point
@@ -90,7 +90,7 @@ See `docs/VIDEO_PLANNER_INTEGRATION.md` for the full spec.
 
 ---
 
-## M4 — Text overlays, transitions, speed  (~6 days)
+## ✅ M4 — Text overlays, transitions, speed  ·  shipped 2026-04-15
 
 - `TextClip` type: content, font, x/y/size, color, in/out
 - Transitions on clip boundaries: fade, dissolve (duration in frames)
@@ -101,7 +101,7 @@ See `docs/VIDEO_PLANNER_INTEGRATION.md` for the full spec.
 
 ---
 
-## M5 — Export to MP4 + presets + FCPXML export  (~5 days)
+## ✅ M5 — Export to MP4  ·  shipped 2026-04-15 (presets + FCPXML pending polish)
 
 - Port `engine/deliver/timeline_render.py` (already copied) to full multi-track
 - Presets: YouTube 1080p (H.264 High CRF 18, AAC 192k), TikTok 1080×1920, Custom
