@@ -3,8 +3,21 @@
 Target: ~10–12 weeks part-time to MVP (M0 → M8). Each milestone produces a
 runnable, useful-in-some-way Kinoro.
 
-Cross-platform (Linux + macOS + Windows) is a requirement from M0. Code signing
-and notarization are deferred (no paid certs yet).
+> **Progress log**: for what's shipped so far + the audit remediation
+> phases bridging M1 to M2, see [`PROGRESS.md`](./PROGRESS.md).
+
+**Current platform support**: Linux only. Everything up to and including
+M7 is developed and tested on Linux (Ubuntu 24.04, X11 + Wayland). The
+code is written to be portable — `pathlib.Path` everywhere, `python` /
+`python3` auto-detect, Electron `CmdOrCtrl` accelerators — but no one
+has booted the sidecar on macOS or Windows yet, and those platforms are
+explicitly out of scope until M8.
+
+**M8 is where cross-platform becomes real**: bundled Python + static
+ffmpeg + platform-specific installers, with smoke tests on clean Ubuntu
+24.04, macOS 14, and Windows 11 VMs. Code signing + notarization
+(Apple Developer + Authenticode) are deferred further — no paid certs
+yet.
 
 ---
 
@@ -17,7 +30,9 @@ and notarization are deferred (no paid certs yet).
 - Cross-platform sidecar: `python3`/`python` auto-detect; `KINORO_PYTHON` override
 - electron-builder configured for AppImage + deb + DMG + NSIS
 
-**Verify**: `cd app && npm start` opens window showing green "Sidecar: ok" status on Linux, macOS, and Windows.
+**Verify (Linux only at this stage)**: `cd app && npm run start:dev`
+opens a window showing green "Sidecar: ok" status. macOS + Windows
+verification of the same path lands with M8 packaging.
 
 ---
 

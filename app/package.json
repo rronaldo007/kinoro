@@ -6,7 +6,8 @@
   "private": true,
   "scripts": {
     "build": "tsc",
-    "start": "npm run build && electron . --no-sandbox",
+    "start": "npm run build && electron .",
+    "start:dev": "npm run build && electron . --no-sandbox",
     "dist": "npm run build && electron-builder",
     "dist:linux": "npm run build && electron-builder --linux AppImage",
     "dist:mac": "npm run build && electron-builder --mac dmg",

@@ -87,12 +87,17 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# Single local SQLite file in the user data directory. The Electron main
-# process passes KINORO_DATA_DIR to the sidecar; in dev it falls back to
-# <repo>/user-data/.
+# Single local SQLite file in the user data directory.
+#
+# The Electron main process always passes KINORO_DATA_DIR pointing at
+# `app.getPath("userData")/data` — on Linux that's ~/.config/kinoro-app/data.
+# When `manage.py` is run standalone (tests, one-off migrations, shell),
+# we default to the same Linux path so the repo-local trap that cost us
+# hours in the session ("migrations hit a different SQLite than the
+# sidecar") cannot repeat. Override via KINORO_DATA_DIR when needed.
 _DATA_DIR = Path(
     os.environ.get("KINORO_DATA_DIR")
-    or (BASE_DIR.parent / "user-data")
+    or (Path.home() / ".config" / "kinoro-app" / "data")
 ).resolve()
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -101,6 +106,44 @@ DATABASES = {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": str(_DATA_DIR / "kinoro.sqlite3"),
     }
+}
+
+# Logging — Electron pipes sidecar stdout into .cache/kinoro-app.log; we also
+# write a dedicated file at $KINORO_DATA_DIR/kinoro.log so operators have one
+# canonical place to look after a failed ingest/import.
+_LOG_FILE = _DATA_DIR / "kinoro.log"
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "kinoro": {
+            "format": "%(asctime)s %(levelname)s %(name)s: %(message)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "kinoro",
+            "level": "INFO",
+        },
+        "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": str(_LOG_FILE),
+            "maxBytes": 5 * 1024 * 1024,
+            "backupCount": 3,
+            "formatter": "kinoro",
+            "level": "DEBUG",
+        },
+    },
+    "root": {
+        "handlers": ["console", "file"],
+        "level": "INFO",
+    },
+    "loggers": {
+        "apps": {"handlers": ["console", "file"], "level": "DEBUG", "propagate": False},
+        "engine": {"handlers": ["console", "file"], "level": "DEBUG", "propagate": False},
+    },
 }
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

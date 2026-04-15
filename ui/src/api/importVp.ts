@@ -39,6 +39,14 @@ export async function vpLogin(body: {
   return (await api.post("/api/import/vp/login/", body)).data;
 }
 
+export async function vpAdoptTokens(body: {
+  base_url: string;
+  access: string;
+  refresh?: string;
+}): Promise<VPAccount> {
+  return (await api.post("/api/import/vp/adopt/", body)).data;
+}
+
 export async function vpLogout(): Promise<void> {
   await api.post("/api/import/vp/logout/");
 }
@@ -63,4 +71,39 @@ export async function listVpProjects(): Promise<VPProjectSummary[]> {
 
 export async function getVpProject(id: string): Promise<VPProjectDetail> {
   return (await api.get(`/api/import/vp/projects/${id}/`)).data;
+}
+
+export type VpImportJobStatus =
+  | "queued"
+  | "fetching_project"
+  | "downloading_media"
+  | "building_proxies"
+  | "done"
+  | "failed";
+
+export interface VpImportJob {
+  id: string;
+  source: "api" | "zip";
+  remote_project_id: string;
+  status: VpImportJobStatus;
+  progress: number;
+  error_message: string;
+  kinoro_project_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VpImportJobStarted extends VpImportJob {
+  kind: "editor" | "project";
+  asset_count: number;
+}
+
+export async function startVpProjectImport(
+  id: string,
+): Promise<VpImportJobStarted> {
+  return (await api.post(`/api/import/vp/projects/${id}/import/`)).data;
+}
+
+export async function getVpImportJob(jobId: string): Promise<VpImportJob> {
+  return (await api.get(`/api/import/vp/jobs/${jobId}/`)).data;
 }

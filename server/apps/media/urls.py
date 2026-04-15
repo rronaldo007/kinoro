@@ -1,3 +1,8 @@
-from django.urls import path
+from rest_framework.routers import DefaultRouter
 
-urlpatterns: list = []
+from .views import MediaAssetViewSet
+
+router = DefaultRouter()
+router.register(r"", MediaAssetViewSet, basename="media")
+
+urlpatterns = router.urls

@@ -1,3 +1,8 @@
-from django.urls import path
+from rest_framework.routers import DefaultRouter
 
-urlpatterns: list = []
+from .views import RenderJobViewSet
+
+router = DefaultRouter()
+router.register(r"", RenderJobViewSet, basename="render")
+
+urlpatterns = router.urls

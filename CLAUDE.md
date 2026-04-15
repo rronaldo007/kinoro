@@ -65,7 +65,9 @@ research/ 6 FOSS editor clones (git-ignored, reference-only, GPL)
 
 ## Cross-platform invariants
 
-- Linux, macOS, Windows — all three must work from MVP.
+- **Linux is the tested platform today.** macOS and Windows light up at
+  M8 (packaging). Every change still has to honour the portability
+  invariants below so we're not paying compounding tax in M8.
 - `pathlib.Path` + `path.join` — never string concatenation with `/` or `\`.
 - Menu roles (Cmd vs Ctrl) handled by Electron's `CmdOrCtrl` accelerator.
 - Python binary name varies — see `app/src/sidecar.ts:defaultPython()`.
@@ -89,5 +91,33 @@ When implementing a new feature, check if Vediteur already solved it:
 - Don't diverge from Vediteur's engine without a clear reason — ideally patches
   land in both repos.
 
-See `docs/ROADMAP.md` for milestone order and `docs/REFERENCES.md` for the
-concrete FOSS-editor pattern catalog that shaped these decisions.
+## Documentation (`docs/`)
+
+All Kinoro project docs live under `docs/`. Read the right one before
+touching an area:
+
+- [`docs/PROGRESS.md`](./docs/PROGRESS.md) — **single source of truth for what's
+  shipped, what's in flight, and what's next.** Read this first when
+  picking up the project; it indexes M0 → M8 status and the audit-fix
+  phases (A done, B–D pending).
+- [`docs/ROADMAP.md`](./docs/ROADMAP.md) — M0 → M8 milestone plan with time
+  estimates and verification checklists.
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — layered design
+  (Electron main / React renderer / Django sidecar / framework-free
+  `engine/`) + data-flow diagrams for ingest and VP import.
+- [`docs/PROJECT_FORMAT.md`](./docs/PROJECT_FORMAT.md) — the `.kinoro`
+  timeline schema consumed by `engine/deliver/`.
+- [`docs/VIDEO_PLANNER_INTEGRATION.md`](./docs/VIDEO_PLANNER_INTEGRATION.md)
+  — `kinoro://` handoff contract, VPClient endpoint list, two-path
+  import design.
+- [`docs/OPERATIONS.md`](./docs/OPERATIONS.md) — dev runbook: how
+  start.sh wires VP + Kinoro together, canonical paths
+  (`~/.config/kinoro-app/data/`), the `--no-sandbox` split, known
+  issues (strictPort 5174, CDN seeds), pkill patterns, test recipes.
+- [`docs/REFERENCES.md`](./docs/REFERENCES.md) — pattern catalog from
+  Kdenlive, Shotcut, Olive, OpenShot, Flowblade, LosslessCut, Resolve
+  SDK, OCIO that shaped the architecture decisions.
+
+Milestone order: `docs/ROADMAP.md`. Concrete architectural precedents:
+`docs/REFERENCES.md`. Current state + open remediation items:
+`docs/PROGRESS.md`.

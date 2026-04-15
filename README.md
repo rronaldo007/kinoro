@@ -44,7 +44,10 @@ npm install
 cd ui && npm run dev
 
 #   Terminal B — Electron (spawns Django sidecar on a free port):
-cd app && npm start
+#   Use start:dev on Linux — it passes --no-sandbox, which Electron needs
+#   when run from some Linux dev setups. `npm start` is the production
+#   default and intentionally does NOT pass it.
+cd app && npm run start:dev
 ```
 
 The Electron window should open showing "Kinoro · M0" + a Sidecar panel
