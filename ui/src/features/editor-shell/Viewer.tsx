@@ -29,6 +29,10 @@ export default function Viewer() {
   const playhead = useTimelineStore((s) => s.playhead);
   const playing = useTimelineStore((s) => s.playing);
   const fps = useTimelineStore((s) => s.fps);
+  const markIn = useTimelineStore((s) => s.markIn);
+  const markOut = useTimelineStore((s) => s.markOut);
+  const playbackRate = useTimelineStore((s) => s.playbackRate);
+  const loopRange = useTimelineStore((s) => s.loopRange);
   const setPlayhead = useTimelineStore((s) => s.setPlayhead);
   const setPlaying = useTimelineStore((s) => s.setPlaying);
   const stepFrame = useTimelineStore((s) => s.stepFrame);
@@ -151,19 +155,70 @@ export default function Viewer() {
     }
   }, [playhead, activeClip, proxyUrl]);
 
-  // Play/pause controller.
+  // Play/pause + JKL shuttle controller. Native <video> playback covers
+  // forward rates (clamped to [0.0625, 16] per HTMLMediaElement spec). For
+  // reverse (rate < 0) we pause the native element and let the rAF driver
+  // below step the playhead backwards — `<video>` elements can't play
+  // backwards natively.
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    if (playing && activeClip && proxyUrl) {
-      video.playbackRate = activeClip.speed || 1;
+    if (playing && activeClip && proxyUrl && playbackRate > 0) {
+      const clipSpeed = activeClip.speed || 1;
+      const combined = clipSpeed * playbackRate;
+      // HTMLMediaElement spec minimum is ~0.0625 and max ~16 on most engines.
+      video.playbackRate = Math.max(0.0625, Math.min(16, combined));
       void video.play().catch(() => {
         /* autoplay may be blocked until a click; swallow */
       });
     } else {
       video.pause();
     }
-  }, [playing, activeClip, proxyUrl]);
+  }, [playing, activeClip, proxyUrl, playbackRate]);
+
+  // Emulated reverse playback + >1× shuttle driver via requestAnimationFrame.
+  // Also drives forward rates so that the loop-range check fires even when
+  // the timeupdate callback is coarse. When rate < 0 we do ALL playhead
+  // advancement here since the native element is paused.
+  useEffect(() => {
+    if (!playing) return;
+    let cancelled = false;
+    let rafId = 0;
+    let lastTs = performance.now();
+    const tick = (ts: number) => {
+      if (cancelled) return;
+      const dt = Math.max(0, (ts - lastTs) / 1000);
+      lastTs = ts;
+      const s = useTimelineStore.getState();
+      if (!s.playing) return;
+      // Forward native playback already moves the playhead via onTimeUpdate,
+      // so this driver only owns the reverse case (rate < 0) — but it also
+      // enforces the loop band on every tick regardless of direction.
+      if (s.playbackRate < 0) {
+        const step = Math.abs(s.playbackRate) * dt;
+        const nextPh = Math.max(0, s.playhead - step);
+        if (nextPh === 0 && s.playhead === 0) {
+          // Can't go further — stop.
+          s.setPlaying(false);
+        } else {
+          s.setPlayhead(nextPh);
+        }
+      }
+      // Loop-range enforcement: if we cross markOut during loop playback,
+      // jump back to markIn. Covers both native-forward and rAF-reverse.
+      if (s.loopRange && s.markIn !== null && s.markOut !== null) {
+        if (s.playhead >= s.markOut - 1e-3 || s.playhead < s.markIn) {
+          s.setPlayhead(s.markIn);
+        }
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+    };
+  }, [playing]);
 
   function onTimeUpdate() {
     if (suppressTimeupdateRef.current) {
@@ -177,6 +232,14 @@ export default function Viewer() {
     const clipDur = selectClipDuration(activeClip);
     const offsetInClip = (video.currentTime - activeClip.in_seconds) / speed;
     const newPlayhead = activeClip.start_seconds + offsetInClip;
+    // Loop-range short circuit: if we're in Shift+Space loop and just
+    // crossed markOut, hop back to markIn without advancing further.
+    if (loopRange && markIn !== null && markOut !== null) {
+      if (newPlayhead >= markOut - 1e-3) {
+        setPlayhead(markIn);
+        return;
+      }
+    }
     // Step past the boundary to hand off to the next clip (or stop).
     if (newPlayhead >= activeClip.start_seconds + clipDur - 1e-3) {
       setPlayhead(activeClip.start_seconds + clipDur + 1e-3);
@@ -259,6 +322,35 @@ export default function Viewer() {
           <span className="font-mono text-sm text-neutral-400 tabular-nums">
             {formatTimecode(playhead, fps)}
           </span>
+          {playbackRate !== 0 && playbackRate !== 1 && (
+            <span
+              className="font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-[4px]"
+              style={{
+                color: playbackRate < 0 ? "#f87171" : "var(--color-accent)",
+                backgroundColor: "rgba(255,255,255,0.04)",
+              }}
+              title="JKL shuttle rate"
+            >
+              {playbackRate > 0 ? "" : "-"}
+              {Math.abs(playbackRate)}x
+            </span>
+          )}
+          {(markIn !== null || markOut !== null) && (
+            <span
+              className="font-mono text-[10px] tabular-nums px-2 py-0.5 rounded-[4px] border"
+              style={{
+                color: "#eab308",
+                borderColor: "rgba(234, 179, 8, 0.4)",
+                backgroundColor: "rgba(250, 204, 21, 0.08)",
+              }}
+              title="Mark in / mark out — Shift+Space to loop"
+            >
+              {loopRange ? "LOOP " : ""}
+              I: {markIn !== null ? formatMarkTimecode(markIn) : "--:--"}
+              {" — "}
+              O: {markOut !== null ? formatMarkTimecode(markOut) : "--:--"}
+            </span>
+          )}
           <button
             type="button"
             aria-label={muted ? "Unmute" : "Mute"}
@@ -300,6 +392,7 @@ export default function Viewer() {
             playhead={playhead}
             playing={playing}
             muted={muted}
+            shuttleRate={playbackRate}
           />
           <TextOverlays clips={activeTextClips} />
           {!activeClip && (
@@ -355,12 +448,17 @@ function AudioLayer({
   playhead,
   playing,
   muted,
+  shuttleRate,
 }: {
   clips: Clip[];
   assets: MediaAsset[];
   playhead: number;
   playing: boolean;
   muted: boolean;
+  /** Signed JKL shuttle rate. Audio has no true reverse playback, so when
+   * `shuttleRate < 0` we pause audio outright (video drives the playhead
+   * via the rAF driver; scrub silence is acceptable during reverse). */
+  shuttleRate: number;
 }) {
   const refs = useRef<Map<string, HTMLAudioElement>>(new Map());
   // Suppress feedback on programmatic currentTime writes, per-clip.
@@ -391,9 +489,12 @@ function AudioLayer({
           el.currentTime = Math.max(0, sourceSeconds);
         }
       }
-      el.playbackRate = speed;
+      // Combine per-clip speed with the global JKL shuttle rate. Only
+      // positive rates pass through — negatives mute audio (reverse).
+      const combined = speed * Math.max(0, shuttleRate || 1);
+      el.playbackRate = Math.max(0.0625, Math.min(16, combined || speed));
       el.muted = muted;
-      if (playing) {
+      if (playing && shuttleRate >= 0) {
         void el.play().catch(() => {
           /* autoplay may be blocked until a click; swallow */
         });
@@ -401,7 +502,7 @@ function AudioLayer({
         el.pause();
       }
     }
-  }, [clips, playhead, playing, muted]);
+  }, [clips, playhead, playing, muted, shuttleRate]);
 
   return (
     <>
@@ -514,6 +615,14 @@ function resolveProxyUrl(asset: MediaAsset | null): string | null {
   // proxy_url is already the absolute path "/proxies/<uuid>.mp4" served by
   // the sidecar's static() mapping.
   return `http://127.0.0.1:${port}${asset.proxy_url}`;
+}
+
+// Shorter mm:ss timecode for the marks pill — framecount would crowd it.
+function formatMarkTimecode(seconds: number): string {
+  const total = Math.max(0, seconds);
+  const mm = Math.floor(total / 60);
+  const ss = Math.floor(total % 60);
+  return `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 }
 
 function formatTimecode(seconds: number, fps: number): string {

@@ -10,11 +10,39 @@ import {
 const TRACK_HEADER_WIDTH = 88;
 const TRACK_HEIGHT = 56;
 const TRIM_HANDLE_WIDTH = 7;
+/** Snap tolerance expressed in pixels — converted to seconds at runtime
+ * via the current pxPerSec. ~6 px feels sticky without being grabby. */
+const SNAP_TOLERANCE_PX = 6;
 
 type Gesture =
   | { kind: "move"; clipId: string; grabOffsetSec: number; startClientY: number }
   | { kind: "trim-in"; clipId: string }
   | { kind: "trim-out"; clipId: string };
+
+interface MarqueeRect {
+  /** Anchor point in track-pane-relative pixels. */
+  startX: number;
+  startY: number;
+  /** Current cursor point. */
+  curX: number;
+  curY: number;
+}
+
+/** Pick the snap target from `candidates` (all in seconds) closest to
+ * `value`, but only if within `tolSec`. Returns `value` unchanged when
+ * nothing is close enough. */
+function snapTo(value: number, candidates: number[], tolSec: number): number {
+  let best = value;
+  let bestDelta = tolSec;
+  for (const c of candidates) {
+    const d = Math.abs(c - value);
+    if (d <= bestDelta) {
+      bestDelta = d;
+      best = c;
+    }
+  }
+  return best;
+}
 
 export default function Timeline() {
   const tracks = useTimelineStore((s) => s.tracks);
@@ -22,10 +50,17 @@ export default function Timeline() {
   const pxPerSec = useTimelineStore((s) => s.pxPerSec);
   const playhead = useTimelineStore((s) => s.playhead);
   const selection = useTimelineStore((s) => s.selection);
+  const multiSelection = useTimelineStore((s) => s.multiSelection);
+  const snapEnabled = useTimelineStore((s) => s.snapEnabled);
+  const toggleSnap = useTimelineStore((s) => s.toggleSnap);
+  const markIn = useTimelineStore((s) => s.markIn);
+  const markOut = useTimelineStore((s) => s.markOut);
   const addClip = useTimelineStore((s) => s.addClip);
   const addTextClip = useTimelineStore((s) => s.addTextClip);
   const removeClip = useTimelineStore((s) => s.removeClip);
   const selectClip = useTimelineStore((s) => s.selectClip);
+  const toggleMultiSelection = useTimelineStore((s) => s.toggleMultiSelection);
+  const clearMultiSelection = useTimelineStore((s) => s.clearMultiSelection);
   const setZoom = useTimelineStore((s) => s.setZoom);
   const setPlayhead = useTimelineStore((s) => s.setPlayhead);
   const beginHistoryStep = useTimelineStore((s) => s.beginHistoryStep);
@@ -36,6 +71,9 @@ export default function Timeline() {
   const trackPaneRef = useRef<HTMLDivElement | null>(null);
   const gestureRef = useRef<Gesture | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  // Marquee rectangle in track-pane-relative pixels. Null when idle. Kept
+  // in React state so the overlay re-renders as it grows.
+  const [marquee, setMarquee] = useState<MarqueeRect | null>(null);
 
   // Ruler tick density — 1 tick / sec when zoomed in, coarser as we zoom out.
   const secondsVisible = Math.max(20, Math.ceil(600 / (pxPerSec / 40)));
@@ -76,8 +114,19 @@ export default function Timeline() {
     const rect = trackPaneRef.current?.getBoundingClientRect();
     if (!rect) return;
     const relX = e.clientX - rect.left;
+    const relY = e.clientY - rect.top;
+    // Begin a marquee anchor. We only treat it as a real marquee once
+    // the cursor moves beyond a small threshold — otherwise mouseup
+    // falls through to a bare click (scrub playhead + clear selection).
+    setMarquee({ startX: relX, startY: relY, curX: relX, curY: relY });
+    // Preserve existing behaviour on a bare click: scrub the playhead.
+    // If a drag develops we'll leave the playhead where the user clicked,
+    // which matches every other NLE.
     setPlayhead(Math.max(0, relX / pxPerSec));
-    selectClip(null);
+    if (!e.shiftKey) {
+      selectClip(null);
+      clearMultiSelection();
+    }
   }
 
   function handleWheel(e: React.WheelEvent<HTMLDivElement>) {
@@ -87,46 +136,85 @@ export default function Timeline() {
     setZoom(pxPerSec * factor);
   }
 
-  // Gesture tracking — one set of window listeners manages every drag.
+  // Gesture tracking — one set of window listeners manages every drag
+  // (clip move/trim AND marquee selection).
   useEffect(() => {
     function onMove(e: MouseEvent) {
-      const g = gestureRef.current;
-      if (!g) return;
       const rect = trackPaneRef.current?.getBoundingClientRect();
       if (!rect) return;
       const relX = e.clientX - rect.left;
       const relY = e.clientY - rect.top;
+
+      // Marquee gesture wins if we have no clip gesture active.
+      if (!gestureRef.current) {
+        setMarquee((m) => (m ? { ...m, curX: relX, curY: relY } : m));
+        return;
+      }
+
+      const g = gestureRef.current;
       const seconds = Math.max(0, relX / pxPerSec);
 
       const state = useTimelineStore.getState();
       const clip = state.clips.find((c) => c.id === g.clipId);
       if (!clip) return;
 
+      // Snap candidates in seconds, computed per move so they track any
+      // live updates from other clips during the drag. We skip the clip
+      // being dragged so it doesn't snap to its own edges.
+      const snapTargets: number[] = state.snapEnabled
+        ? [
+            state.playhead,
+            ...state.clips
+              .filter((c) => c.id !== g.clipId)
+              .flatMap((c) => [
+                c.start_seconds,
+                c.start_seconds + selectClipDuration(c),
+              ]),
+          ]
+        : [];
+      const tolSec = SNAP_TOLERANCE_PX / Math.max(pxPerSec, 1);
+
       if (g.kind === "move") {
         // Allow crossing into any track of the same kind.
         const currentTrack = state.tracks.find((t) => t.id === clip.track_id);
         const desiredTrack = trackIdAtY(state.tracks, relY, currentTrack?.kind);
-        moveClipLive(
-          g.clipId,
-          Math.max(0, seconds - g.grabOffsetSec),
-          desiredTrack,
-        );
+        const rawStart = Math.max(0, seconds - g.grabOffsetSec);
+        // Snap either the clip's start OR end to a target, whichever is
+        // closer — the visible edge nearest to a target wins.
+        const clipDur = selectClipDuration(clip);
+        let snappedStart = rawStart;
+        if (state.snapEnabled && snapTargets.length) {
+          const startSnap = snapTo(rawStart, snapTargets, tolSec);
+          const endSnap = snapTo(rawStart + clipDur, snapTargets, tolSec);
+          const startDelta = Math.abs(startSnap - rawStart);
+          const endDelta = Math.abs(endSnap - (rawStart + clipDur));
+          if (startDelta <= endDelta && startDelta < tolSec) {
+            snappedStart = startSnap;
+          } else if (endDelta < tolSec) {
+            snappedStart = endSnap - clipDur;
+          }
+        }
+        moveClipLive(g.clipId, Math.max(0, snappedStart), desiredTrack);
       } else if (g.kind === "trim-in") {
-        const timelineDelta = seconds - clip.start_seconds;
-        // Moving the in-point moves the clip's start too so the visible
-        // left edge tracks the cursor.
+        // Snap the cursor (which maps to the new left edge on the
+        // timeline) before converting to source-seconds.
+        const snappedLeftSec = state.snapEnabled
+          ? snapTo(seconds, snapTargets, tolSec)
+          : seconds;
+        const timelineDelta = snappedLeftSec - clip.start_seconds;
         const speed = clip.speed || 1;
         const newIn = clip.in_seconds + timelineDelta * speed;
         trimClipInLive(g.clipId, newIn);
-        // Shift start to keep the right edge anchored.
         const newStart = Math.max(0, clip.start_seconds + timelineDelta);
         if (newStart !== clip.start_seconds) {
           moveClipLive(g.clipId, newStart, clip.track_id);
         }
       } else if (g.kind === "trim-out") {
-        const clipEndSec = seconds;
+        const snappedRightSec = state.snapEnabled
+          ? snapTo(seconds, snapTargets, tolSec)
+          : seconds;
         const speed = clip.speed || 1;
-        const timelineDur = Math.max(0.05, clipEndSec - clip.start_seconds);
+        const timelineDur = Math.max(0.05, snappedRightSec - clip.start_seconds);
         const newOut = clip.in_seconds + timelineDur * speed;
         trimClipOutLive(g.clipId, newOut);
       }
@@ -135,6 +223,24 @@ export default function Timeline() {
     function onUp() {
       gestureRef.current = null;
       document.body.style.cursor = "";
+      // Commit marquee → select all intersecting clips. Only counts as a
+      // real marquee if the cursor actually moved; bare clicks leave the
+      // primary selection untouched (we already cleared it in mousedown).
+      setMarquee((m) => {
+        if (!m) return null;
+        const dx = Math.abs(m.curX - m.startX);
+        const dy = Math.abs(m.curY - m.startY);
+        if (dx < 3 && dy < 3) return null;
+        const state = useTimelineStore.getState();
+        const hits = clipsIntersectingMarquee(state.clips, state.tracks, m, pxPerSec);
+        state.setMultiSelection(hits);
+        // Promote the first hit to primary selection so the Inspector has
+        // something to show; the rest sit in multiSelection.
+        if (hits.length > 0) {
+          state.selectClip(hits[0]);
+        }
+        return null;
+      });
     }
 
     window.addEventListener("mousemove", onMove);
@@ -148,6 +254,18 @@ export default function Timeline() {
   function startMove(clipId: string, e: React.MouseEvent) {
     e.stopPropagation();
     e.preventDefault();
+    // Shift-click: toggle this clip in/out of the multi-selection,
+    // but don't start a drag gesture — makes it cheap to build up a
+    // set of clips without accidentally nudging any.
+    if (e.shiftKey) {
+      toggleMultiSelection(clipId);
+      // Promote to primary if there is no primary yet — the Inspector
+      // needs something to display.
+      if (!useTimelineStore.getState().selection) {
+        selectClip(clipId);
+      }
+      return;
+    }
     const rect = trackPaneRef.current?.getBoundingClientRect();
     if (!rect) return;
     const clip = useTimelineStore.getState().clips.find((c) => c.id === clipId);
@@ -155,6 +273,11 @@ export default function Timeline() {
     const relX = e.clientX - rect.left;
     const grabSec = relX / pxPerSec - clip.start_seconds;
     beginHistoryStep();
+    // Clicking a clip that is NOT in the multi-selection collapses the
+    // set to just this clip — matches FCP/Premiere/Resolve.
+    if (!useTimelineStore.getState().multiSelection.has(clipId)) {
+      clearMultiSelection();
+    }
     selectClip(clipId);
     gestureRef.current = {
       kind: "move",
@@ -226,6 +349,20 @@ export default function Timeline() {
           </button>
         )}
         <div className="flex-1" />
+        <button
+          type="button"
+          onClick={toggleSnap}
+          className="text-[10px] px-1.5 py-0.5 rounded-[4px] uppercase tracking-wider"
+          style={{
+            color: snapEnabled ? "var(--color-accent)" : "#606060",
+            backgroundColor: snapEnabled
+              ? "rgba(46, 205, 167, 0.08)"
+              : "transparent",
+          }}
+          title="Toggle snap (N)"
+        >
+          Snap {snapEnabled ? "on" : "off"}
+        </button>
         <span className="text-[10px] font-mono text-neutral-500 tabular-nums">
           {formatTimecode(playhead)}
         </span>
@@ -259,7 +396,7 @@ export default function Timeline() {
           00:00
         </div>
         <div
-          className="flex text-[10px] text-neutral-600 font-mono overflow-hidden"
+          className="relative flex text-[10px] text-neutral-600 font-mono overflow-hidden"
           style={{ minWidth: secondsVisible * pxPerSec }}
         >
           {ticks.map((i) => (
@@ -271,6 +408,52 @@ export default function Timeline() {
               {i}s
             </div>
           ))}
+          {/* Mark-in → Mark-out gold band. Rendered only when BOTH marks are
+           * set AND markIn < markOut (the store already guards against
+           * invalid pairs but we defend here too for visual safety). */}
+          {markIn !== null && markOut !== null && markOut > markIn && (
+            <div
+              className="absolute pointer-events-none"
+              style={{
+                left: markIn * pxPerSec,
+                width: (markOut - markIn) * pxPerSec,
+                bottom: 0,
+                height: 4,
+                backgroundColor: "rgba(250, 204, 21, 0.35)",
+                borderTop: "1px solid #eab308",
+                borderBottom: "1px solid #eab308",
+              }}
+              title={`Mark range: ${markIn.toFixed(2)}s — ${markOut.toFixed(2)}s`}
+            />
+          )}
+          {/* Individual mark tick when only one of the two is set — helps the
+           * user see they did something before placing the companion mark. */}
+          {markIn !== null && (markOut === null || markOut <= markIn) && (
+            <div
+              className="absolute pointer-events-none"
+              style={{
+                left: markIn * pxPerSec - 1,
+                width: 2,
+                top: 0,
+                bottom: 0,
+                backgroundColor: "#eab308",
+              }}
+              title={`Mark in: ${markIn.toFixed(2)}s`}
+            />
+          )}
+          {markOut !== null && (markIn === null || markIn >= markOut) && (
+            <div
+              className="absolute pointer-events-none"
+              style={{
+                left: markOut * pxPerSec - 1,
+                width: 2,
+                top: 0,
+                bottom: 0,
+                backgroundColor: "#eab308",
+              }}
+              title={`Mark out: ${markOut.toFixed(2)}s`}
+            />
+          )}
         </div>
       </div>
 
@@ -342,19 +525,42 @@ export default function Timeline() {
             const track = tracks.find((t) => t.id === c.track_id);
             if (!track) return null;
             const trackIndex = tracks.indexOf(track);
+            const isPrimary = selection === c.id;
+            const inMulti = multiSelection.has(c.id);
+            const inLiveMarquee =
+              marquee !== null &&
+              clipIntersectsMarquee(c, tracks, marquee, pxPerSec);
             return (
               <ClipRect
                 key={c.id}
                 clip={c}
                 pxPerSec={pxPerSec}
                 top={trackIndex * TRACK_HEIGHT}
-                selected={selection === c.id}
+                selected={isPrimary}
+                inMultiSelection={inMulti || inLiveMarquee}
                 onStartMove={(e) => startMove(c.id, e)}
                 onStartTrimIn={(e) => startTrimIn(c.id, e)}
                 onStartTrimOut={(e) => startTrimOut(c.id, e)}
               />
             );
           })}
+
+          {/* Marquee rectangle (dashed accent) */}
+          {marquee &&
+            (Math.abs(marquee.curX - marquee.startX) > 2 ||
+              Math.abs(marquee.curY - marquee.startY) > 2) && (
+              <div
+                className="absolute pointer-events-none"
+                style={{
+                  left: Math.min(marquee.startX, marquee.curX),
+                  top: Math.min(marquee.startY, marquee.curY),
+                  width: Math.abs(marquee.curX - marquee.startX),
+                  height: Math.abs(marquee.curY - marquee.startY),
+                  border: "1px dashed var(--color-accent)",
+                  backgroundColor: "rgba(46, 205, 167, 0.08)",
+                }}
+              />
+            )}
 
           {/* Playhead */}
           <div
@@ -375,6 +581,7 @@ function ClipRect({
   pxPerSec,
   top,
   selected,
+  inMultiSelection,
   onStartMove,
   onStartTrimIn,
   onStartTrimOut,
@@ -383,6 +590,7 @@ function ClipRect({
   pxPerSec: number;
   top: number;
   selected: boolean;
+  inMultiSelection: boolean;
   onStartMove: (e: React.MouseEvent) => void;
   onStartTrimIn: (e: React.MouseEvent) => void;
   onStartTrimOut: (e: React.MouseEvent) => void;
@@ -390,6 +598,10 @@ function ClipRect({
   const width = Math.max(selectClipDuration(clip) * pxPerSec, 8);
   const left = clip.start_seconds * pxPerSec;
   const isText = clip.type === "text";
+  // A clip is "highlighted" whenever it is the primary selection or in
+  // the multi-selection set — both get the accent border treatment, but
+  // only primary gets the filled accent background.
+  const highlighted = selected || inMultiSelection;
   // Text clips use a yellow palette to distinguish them from media clips.
   const bg = isText
     ? selected
@@ -401,8 +613,10 @@ function ClipRect({
   const border = isText
     ? selected
       ? "#f59e0b"
-      : "#7a5b12"
-    : selected
+      : inMultiSelection
+        ? "#b98820"
+        : "#7a5b12"
+    : highlighted
       ? "var(--color-accent)"
       : "#2a4a44";
   const fg = isText ? "#fde68a" : "#a7f3d0";
@@ -501,6 +715,39 @@ function trackIdAtY(
     return sameKind?.id ?? candidate.id;
   }
   return candidate.id;
+}
+
+/** Does a clip's timeline rectangle intersect the marquee (measured in
+ * pane-relative pixels)? Track index × TRACK_HEIGHT is the vertical
+ * axis; start_seconds × pxPerSec is the horizontal axis. */
+function clipIntersectsMarquee(
+  clip: Clip,
+  tracks: Track[],
+  m: MarqueeRect,
+  pxPerSec: number,
+): boolean {
+  const trackIndex = tracks.findIndex((t) => t.id === clip.track_id);
+  if (trackIndex < 0) return false;
+  const x1 = clip.start_seconds * pxPerSec;
+  const x2 = x1 + selectClipDuration(clip) * pxPerSec;
+  const y1 = trackIndex * TRACK_HEIGHT;
+  const y2 = y1 + TRACK_HEIGHT;
+  const mx1 = Math.min(m.startX, m.curX);
+  const mx2 = Math.max(m.startX, m.curX);
+  const my1 = Math.min(m.startY, m.curY);
+  const my2 = Math.max(m.startY, m.curY);
+  return x1 < mx2 && x2 > mx1 && y1 < my2 && y2 > my1;
+}
+
+function clipsIntersectingMarquee(
+  clips: Clip[],
+  tracks: Track[],
+  m: MarqueeRect,
+  pxPerSec: number,
+): string[] {
+  return clips
+    .filter((c) => clipIntersectsMarquee(c, tracks, m, pxPerSec))
+    .map((c) => c.id);
 }
 
 function formatTimecode(seconds: number): string {

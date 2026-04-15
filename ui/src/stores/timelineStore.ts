@@ -69,9 +69,27 @@ export interface TimelineState {
   tracks: Track[];
   clips: Clip[];
   selection: string | null;
+  /** Secondary multi-selection set. May or may not include `selection`.
+   * The union (see `allSelected`) is what copy/cut/nudge operate on. */
+  multiSelection: Set<string>;
+  /** Copied/cut clips held in memory for paste. Stored as plain Clip
+   * records (pre-rewire) — paste clones them with new ids/starts. */
+  clipboard: Clip[] | null;
+  /** When true, drag gestures snap edges to the playhead and adjacent
+   * clip edges within a small pixel tolerance. Toggled with `N`. */
+  snapEnabled: boolean;
   playhead: number;
   pxPerSec: number;
   playing: boolean;
+  /** Pro-editor transport state — see JKL shuttle semantics in Viewer.tsx. */
+  markIn: number | null;
+  markOut: number | null;
+  /** Signed playback rate. 0 = paused, 1 = normal play, ±2/±4/±8 = JKL
+   * shuttle steps, negatives are reverse. <video> clamps natively; reverse
+   * is emulated in Viewer.tsx via a requestAnimationFrame driver. */
+  playbackRate: number;
+  /** True while Shift+Space loop-between-marks playback is active. */
+  loopRange: boolean;
   history: Snapshot[];
   future: Snapshot[];
 }
@@ -129,11 +147,48 @@ interface TimelineActions {
   splitClipAtPlayhead: () => void;
   rippleDeleteClip: (clipId: string) => void;
   selectClip: (clipId: string | null) => void;
+  /** Toggle a clip into/out of the multi-selection set. Does not touch
+   * the primary `selection`. */
+  toggleMultiSelection: (clipId: string) => void;
+  /** Replace the multi-selection set with the given ids. */
+  setMultiSelection: (ids: string[]) => void;
+  /** Empty the multi-selection set. */
+  clearMultiSelection: () => void;
+  /** Returns the union of `selection` and `multiSelection` as a plain
+   * array of clip ids (primary first, order otherwise unspecified). */
+  allSelected: () => string[];
+  /** Copy the currently-selected clips (primary + multi) to the
+   * clipboard. Not a history step. */
+  copySelection: () => void;
+  /** Copy + ripple-delete the selected clips as one history step. */
+  cutSelection: () => void;
+  /** Paste clipboard clips at the current playhead, preserving relative
+   * offsets. One history step. */
+  pasteAtPlayhead: () => void;
+  /** Nudge the full selection by `delta` frames on the timeline. One
+   * history step. */
+  nudgeSelectionFrames: (delta: number) => void;
+  setSnapEnabled: (v: boolean) => void;
+  toggleSnap: () => void;
   setPlayhead: (seconds: number) => void;
   setZoom: (pxPerSec: number) => void;
   setPlaying: (playing: boolean) => void;
   togglePlay: () => void;
   stepFrame: (direction: 1 | -1) => void;
+  /** Pro-editor transport: set/clear mark-in / mark-out, bump JKL shuttle
+   * rate, start/stop Shift+Space loop-between-marks. Rate cycles:
+   *   from 0 → ±1 (direction)
+   *   from ±1 in same dir → ±2, then ±4, then ±8 (capped)
+   *   reversing direction resets to ±1 in the new direction. */
+  setMarkIn: (t: number) => void;
+  setMarkOut: (t: number) => void;
+  clearMarkIn: () => void;
+  clearMarkOut: () => void;
+  clearMarks: () => void;
+  setPlaybackRate: (r: number) => void;
+  bumpPlaybackRate: (direction: 1 | -1) => void;
+  startLoopPlayback: () => void;
+  stopLoopPlayback: () => void;
   /** Take a snapshot of the current state (exposed so UI gesture handlers
    * can checkpoint once at mousedown and then use the *Live* setters). */
   beginHistoryStep: () => void;
@@ -165,6 +220,18 @@ function captureSnapshot(s: TimelineState): Snapshot {
   };
 }
 
+// Furthest right edge across all clips. Used to clamp mark-in / mark-out
+// without importing selectors (this file defines them after the store).
+function timelineEndOf(clips: Clip[]): number {
+  let end = 0;
+  for (const c of clips) {
+    const dur = (c.out_seconds - c.in_seconds) / (c.speed || 1);
+    const e = c.start_seconds + dur;
+    if (e > end) end = e;
+  }
+  return end;
+}
+
 function pushSnapshot(s: TimelineState): void {
   s.history.push(captureSnapshot(s));
   if (s.history.length > HISTORY_LIMIT) {
@@ -181,9 +248,16 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
     tracks: DEFAULT_TRACKS,
     clips: [],
     selection: null,
+    multiSelection: new Set<string>(),
+    clipboard: null,
+    snapEnabled: true,
     playhead: 0,
     pxPerSec: 40,
     playing: false,
+    markIn: null,
+    markOut: null,
+    playbackRate: 0,
+    loopRange: false,
     history: [],
     future: [],
 
@@ -194,7 +268,13 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
         s.tracks = DEFAULT_TRACKS.map((t) => ({ ...t }));
         s.clips = [];
         s.selection = null;
+        s.multiSelection = new Set<string>();
+        s.clipboard = null;
         s.playhead = 0;
+        s.markIn = null;
+        s.markOut = null;
+        s.playbackRate = 0;
+        s.loopRange = false;
         s.history = [];
         s.future = [];
       }),
@@ -210,7 +290,13 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
             : DEFAULT_TRACKS.map((t) => ({ ...t }));
         s.clips = (clips ?? []).map((c) => ({ ...c }));
         s.selection = null;
+        s.multiSelection = new Set<string>();
+        s.clipboard = null;
         s.playhead = 0;
+        s.markIn = null;
+        s.markOut = null;
+        s.playbackRate = 0;
+        s.loopRange = false;
         s.history = [];
         s.future = [];
       }),
@@ -457,6 +543,140 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
         s.selection = clipId;
       }),
 
+    toggleMultiSelection: (clipId) =>
+      set((s) => {
+        // Immer Set support: operate on a cloned Set and reassign so
+        // subscribers see the change and referential equality breaks.
+        const next = new Set(s.multiSelection);
+        if (next.has(clipId)) next.delete(clipId);
+        else next.add(clipId);
+        s.multiSelection = next;
+      }),
+
+    setMultiSelection: (ids) =>
+      set((s) => {
+        s.multiSelection = new Set(ids);
+      }),
+
+    clearMultiSelection: () =>
+      set((s) => {
+        s.multiSelection = new Set<string>();
+      }),
+
+    allSelected: () => {
+      const { selection, multiSelection } = get();
+      const union = new Set<string>(multiSelection);
+      if (selection) union.add(selection);
+      // Primary first (if present) so consumers know which is the anchor.
+      const out: string[] = [];
+      if (selection) out.push(selection);
+      for (const id of union) if (id !== selection) out.push(id);
+      return out;
+    },
+
+    copySelection: () => {
+      const { clips, selection, multiSelection } = get();
+      const union = new Set<string>(multiSelection);
+      if (selection) union.add(selection);
+      if (union.size === 0) return;
+      const snapshot = clips
+        .filter((c) => union.has(c.id))
+        .map((c) => ({ ...c }));
+      set((s) => {
+        s.clipboard = snapshot;
+      });
+    },
+
+    cutSelection: () =>
+      set((s) => {
+        const union = new Set<string>(s.multiSelection);
+        if (s.selection) union.add(s.selection);
+        if (union.size === 0) return;
+        pushSnapshot(s);
+        s.clipboard = s.clips
+          .filter((c) => union.has(c.id))
+          .map((c) => ({ ...c }));
+        // Group victims by track so each track's ripple is independent.
+        const victimsByTrack = new Map<string, Clip[]>();
+        for (const c of s.clips) {
+          if (!union.has(c.id)) continue;
+          const arr = victimsByTrack.get(c.track_id) ?? [];
+          arr.push(c);
+          victimsByTrack.set(c.track_id, arr);
+        }
+        s.clips = s.clips.filter((c) => !union.has(c.id));
+        for (const [trackId, victims] of victimsByTrack) {
+          // Process in start order, removing each victim's duration from
+          // everything to its right on that track. Later victims already
+          // reflect earlier shifts because they were on the original
+          // timeline before removal.
+          victims.sort((a, b) => a.start_seconds - b.start_seconds);
+          let shift = 0;
+          for (const v of victims) {
+            const dur = (v.out_seconds - v.in_seconds) / (v.speed || 1);
+            const shiftedEnd = v.start_seconds + dur - shift;
+            for (const c of s.clips) {
+              if (c.track_id !== trackId) continue;
+              if (c.start_seconds >= shiftedEnd - 1e-6) {
+                c.start_seconds = Math.max(0, c.start_seconds - dur);
+              }
+            }
+            shift += dur;
+          }
+        }
+        if (s.selection && union.has(s.selection)) s.selection = null;
+        s.multiSelection = new Set<string>();
+      }),
+
+    pasteAtPlayhead: () =>
+      set((s) => {
+        const src = s.clipboard;
+        if (!src || src.length === 0) return;
+        pushSnapshot(s);
+        const earliest = src.reduce(
+          (acc, c) => Math.min(acc, c.start_seconds),
+          Number.POSITIVE_INFINITY,
+        );
+        const ph = s.playhead;
+        const newIds: string[] = [];
+        for (const c of src) {
+          const id = uid();
+          newIds.push(id);
+          s.clips.push({
+            ...c,
+            id,
+            start_seconds: Math.max(0, ph + (c.start_seconds - earliest)),
+          });
+        }
+        s.selection = newIds[0] ?? null;
+        s.multiSelection = new Set(newIds.slice(1));
+      }),
+
+    nudgeSelectionFrames: (delta) =>
+      set((s) => {
+        const union = new Set<string>(s.multiSelection);
+        if (s.selection) union.add(s.selection);
+        if (union.size === 0 || delta === 0) return;
+        pushSnapshot(s);
+        const frameSec = 1 / Math.max(s.fps || 30, 1);
+        const dt = delta * frameSec;
+        for (const c of s.clips) {
+          if (union.has(c.id)) {
+            c.start_seconds = Math.max(0, c.start_seconds + dt);
+          }
+        }
+      }),
+
+    setSnapEnabled: (v) =>
+      set((s) => {
+        s.snapEnabled = !!v;
+      }),
+
+    toggleSnap: () =>
+      set((s) => {
+        s.snapEnabled = !s.snapEnabled;
+      }),
+
     setPlayhead: (seconds) =>
       set((s) => {
         s.playhead = Math.max(0, seconds);
@@ -470,12 +690,18 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
     setPlaying: (playing) =>
       set((s) => {
         s.playing = playing;
+        // Keep playbackRate consistent so JKL shuttle state doesn't linger
+        // after a pause (or after old callers flip `playing` directly).
+        s.playbackRate = playing ? (s.playbackRate > 0 ? s.playbackRate : 1) : 0;
+        if (!playing) s.loopRange = false;
       }),
 
     togglePlay: () =>
       set((s) => {
         if (s.playing) {
           s.playing = false;
+          s.playbackRate = 0;
+          s.loopRange = false;
           return;
         }
         // Starting playback: if the playhead is between clips, snap to the
@@ -496,6 +722,7 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
           else return; // no clips at all — nothing to play
         }
         s.playing = true;
+        s.playbackRate = 1;
       }),
 
     stepFrame: (direction) =>
@@ -503,6 +730,95 @@ export const useTimelineStore = create<TimelineState & TimelineActions>()(
         const frameSec = 1 / Math.max(s.fps || 30, 1);
         s.playhead = Math.max(0, s.playhead + direction * frameSec);
         s.playing = false;
+        s.playbackRate = 0;
+        s.loopRange = false;
+      }),
+
+    setMarkIn: (t) =>
+      set((s) => {
+        const end = timelineEndOf(s.clips);
+        const clamped = Math.max(0, Math.min(t, end));
+        s.markIn = clamped;
+        // If markOut precedes markIn, clear it — otherwise the band is invalid.
+        if (s.markOut !== null && s.markOut <= clamped) s.markOut = null;
+      }),
+
+    setMarkOut: (t) =>
+      set((s) => {
+        const end = timelineEndOf(s.clips);
+        const clamped = Math.max(0, Math.min(t, end));
+        s.markOut = clamped;
+        if (s.markIn !== null && s.markIn >= clamped) s.markIn = null;
+      }),
+
+    clearMarkIn: () =>
+      set((s) => {
+        s.markIn = null;
+      }),
+
+    clearMarkOut: () =>
+      set((s) => {
+        s.markOut = null;
+      }),
+
+    clearMarks: () =>
+      set((s) => {
+        s.markIn = null;
+        s.markOut = null;
+      }),
+
+    setPlaybackRate: (r) =>
+      set((s) => {
+        // Cap at ±8× both ways; HTMLMediaElement allows up to 16 natively but
+        // our reverse-playback driver gets visually unusable past ~8×.
+        const clamped = Math.max(-8, Math.min(8, Number.isFinite(r) ? r : 0));
+        s.playbackRate = clamped;
+        if (clamped === 0) {
+          s.playing = false;
+          s.loopRange = false;
+        } else {
+          s.playing = true;
+        }
+      }),
+
+    bumpPlaybackRate: (direction) =>
+      set((s) => {
+        const sign = direction >= 0 ? 1 : -1;
+        const cur = s.playbackRate;
+        let next: number;
+        if (cur === 0) {
+          next = sign * 1;
+        } else if (Math.sign(cur) !== sign) {
+          // Reversing direction snaps back to ±1.
+          next = sign * 1;
+        } else {
+          // Same direction: 1 → 2 → 4 → 8 (cap).
+          const mag = Math.abs(cur);
+          const stepped = mag < 1 ? 1 : mag < 2 ? 2 : mag < 4 ? 4 : 8;
+          next = sign * stepped;
+        }
+        s.playbackRate = next;
+        s.playing = true;
+        s.loopRange = false;
+      }),
+
+    startLoopPlayback: () =>
+      set((s) => {
+        s.loopRange = true;
+        s.playing = true;
+        s.playbackRate = 1;
+        // If the playhead is outside the loop range (or before markIn), jump
+        // in so playback starts inside the band.
+        if (s.markIn !== null && s.markOut !== null) {
+          if (s.playhead < s.markIn || s.playhead >= s.markOut) {
+            s.playhead = s.markIn;
+          }
+        }
+      }),
+
+    stopLoopPlayback: () =>
+      set((s) => {
+        s.loopRange = false;
       }),
 
     beginHistoryStep: () =>
